@@ -66,6 +66,14 @@ The main entry point. Defines the detection workflow, taint propagation rules, a
 
 ---
 
+## Advanced Usage Tips
+
+- **Precompute call graph before scanning** — improves cross-function reasoning and reduces missed paths
+- **Run 2+ scanning rounds** — increases recall and stabilizes findings via iterative refinement
+- **Enforce per-finding validation** — significantly reduces false positives through explicit verification
+
+---
+
 ## Vulnerability Coverage
 
 34 reference files covering the following categories:
