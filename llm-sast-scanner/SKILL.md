@@ -6,7 +6,7 @@ description: >
   "do a SAST scan", "check for [vulnerability type] in code", "audit source code", or requests a security
   code review of any language or framework. Covers 34 vulnerability classes across web, API, auth, mobile, and logic layers.
 metadata:
-  version: "1.3.2"
+  version: "1.3.1"
   domain: application-security
   references: 34 vulnerability knowledge bases
 ---
@@ -170,11 +170,9 @@ For each candidate finding, answer all of the following:
 | **CONFIRMED** | All reachability/sanitization/exploitability checks pass | Include in report |
 | **LIKELY** | Most checks pass; one uncertainty remains | Include in report, flag uncertainty |
 | **NEEDS CONTEXT** | Cannot determine without runtime behavior / config / additional files | Note as "unverifiable without X" |
-| **FALSE POSITIVE** | Positive evidence of protection found — cite the exact file+line of the sanitization, allowlist check, guard, or framework-level auto-protection that makes the sink safe | Drop silently |
+| **FALSE POSITIVE** | A check definitively fails | Drop silently |
 
 **Only CONFIRMED and LIKELY findings are reported.**
-
-**FP burden of proof**: `UNCERTAIN` on any check is NOT sufficient to declare FALSE POSITIVE. If a check result is UNCERTAIN after inspecting the sink, its callers, and the framework internals, use `NEEDS CONTEXT` instead. Only use FALSE POSITIVE when you have found and can cite positive evidence that the path is protected.
 
 #### Judge Output Format (internal, before reporting)
 
@@ -188,60 +186,21 @@ Judge Verdict:  CONFIRMED / LIKELY / NEEDS CONTEXT / FALSE POSITIVE
 
 #### False Positive Guardrails
 
-**Tags**
-- `default_credentials`: require a reachable auth path that accepts the hardcoded credential.
-- `weak_crypto_hash`: require direct use of weak hash/algo — not just an import or third-party component. Covers both weak algorithms (DES, RC4, ECB) and weak hashes (MD5, SHA-1 for passwords); do not use `weak_crypto` as a separate tag.
-- `rce` → prefer `command_injection` for direct shell/process execution. Do not replace `spel_injection` with `rce`/`command_injection`.
-- `jndi_injection` in demos: only if the JNDI sink is the primary exploit path.
-- Broad tags (`trust_boundary`, `authentication`, `privilege_escalation`): prefer the narrowest valid tag (`xff_spoofing`, `session_fixation`, `verification_code`).
-- `open_redirect`: only if the attacker-controlled redirect is the primary exploit (not infra/parser misconfiguration).
-- `csrf`: skip for stateless Bearer-token-only APIs (`SessionCreationPolicy.STATELESS`).
-- `insecure_deserialization`: skip if `component_vulnerability` covers the same sink.
-- `arbitrary_file_upload`: skip for avatar/profile upload with type restrictions and non-webroot storage.
-- `session_fixation`: skip when Spring Security default session management is active.
-- `information_disclosure`: skip for DB credentials in config files — deployment issue, not app-level.
-
-**Scope**
-- Demo/example code: skip any finding whose ONLY vulnerable path is in `examples/`, `demo/`, `sample/` (or similar). Report only if the bug is in the library/SDK itself.
-- Non-default config: verify the DEFAULT value before reporting. Requires non-default/deprecated → cap `Low`. Explicitly labeled `legacy` or deprecated in code/docs → cap `Informational`.
-
-**Trust Boundary**
-- Operator self-harm: skip findings where the "attacker" input comes from operator-written config files (YAML/JSON/TOML), CLI flags the operator supplies themselves (`--file`, `--url`, `--chain-id`), or commands the operator must explicitly run.
-- Trusted admin role: skip `privilege_escalation`/`business_logic` for actions behind `onlyAdmin`/`onlyOwner`/`onlyPoolAdmin` when that role is trusted by design. Only report if an unprivileged user can reach the same path.
-- Internal-only service: skip `authentication` and `information_disclosure` when the entire codebase has zero auth AND references internal infra (VPC vars, `EC2_INSTANCE_ID`, Eureka, Consul). Auth is at the network layer.
-- Code generators: skip `injection`/`path_traversal`/`rce` for codegen tools (`protoc`, `swagger-codegen`, etc.) whose input comes from developer-controlled source comments, annotations, or local config.
-
-**Protocol & Architecture**
-- Protocol-designed SSRF: skip `ssrf` when fetching a peer-supplied URL is required by spec (LNURL, UMA, OAuth discovery, WebFinger, OIDC discovery). Only report if the impl allows schemes the protocol does not require (e.g., `file://`) or skips required domain validation.
-- Blind SSRF: downgrade to `Informational` when all three hold: (a) response never reaches the attacker, (b) no meaningful side effect on the target, (c) no error oracle.
-- Bounded DoS: skip `denial_of_service` unless the upper bound of the iterated/allocated data is attacker-controllable and unbounded. Naturally bounded data (blockchain validator set, gas limits, etcd/request-body size caps) → not a finding.
-- Brute force: skip `brute_force` only if rate limiting is visible in code, framework config, or referenced middleware in the repo. Do not assume infrastructure-level rate limiting.
-- Idempotent replay: skip replay/`business_logic` when the operation is idempotent AND parameters are cryptographically signed (no tampering possible).
-- Library dead path: if no real caller in the codebase triggers the vulnerable parameter combination AND the code has a warning log for that path → `NEEDS CONTEXT`, not a finding.
-
-**Platform**
-- Android app-private storage: skip `insecure_storage`/`information_disclosure` for `SharedPreferences`/`DataStore` in app-private storage without `android:allowBackup="true"` in a production manifest.
-- Terraform state: skip `information_disclosure` for providers writing secrets to state when attributes are marked `Sensitive: true`.
-- Intra-org CI/CD: skip `supply_chain` for mutable action tags (e.g., `@v3`) when the action org matches the repo org. Only report third-party org actions.
-- Local dev tools: skip `authentication` for README-described local dev tools with no production docs. Exception: report (reduced severity) if the tool does not bind to `localhost`, exposes tokens in API responses, or allows destructive ops.
-
----
-
-#### Pre-Report Checklist
-
-- [ ] Public-facing service, or internal-by-design (zero auth everywhere + internal infra refs)?
-- [ ] Production code, or demo/example/sample directory?
-- [ ] Attacker is genuinely untrusted, not an admin/operator within their own trust boundary?
-- [ ] Verify DEFAULT config value — does the attack work with defaults?
-- [ ] SSRF required by protocol spec?
-- [ ] SSRF response reachable by attacker (readable / side effect / error oracle)?
-- [ ] Sensitive storage protected by OS sandbox (Android app-private)?
-- [ ] Replay: is the operation idempotent with signature-bound parameters?
-- [ ] Library: does any real caller trigger the vulnerable path?
-- [ ] Terraform state with `Sensitive: true` — by design?
-- [ ] DoS: is the upper bound attacker-controllable and unbounded?
-- [ ] CI/CD mutable tags: same org or third-party?
-- [ ] Admin action within the admin's designed trust boundary?
+- Do not emit `default_credentials` unless there is a reachable authentication path that accepts a hardcoded, documented, factory, or seeded credential pair.
+- Do not emit `weak_crypto_hash` when the evidence only shows a vulnerable third-party component or a generic cryptography import. Require direct use of weak hashes, broken password storage, or unsafe signing.
+- **Tag clarification**: `weak_crypto_hash` is the canonical tag for both weak cryptographic algorithms (DES, RC4, ECB mode) and weak hash functions (MD5, SHA-1 for passwords). Do not use `weak_crypto` as a separate tag unless the benchmark ground truth explicitly requires it; prefer `weak_crypto_hash` to avoid tag fragmentation.
+- Do not emit generic `rce` when the code shows direct shell/process execution — prefer `command_injection`.
+- Do not replace `spel_injection` with `command_injection` or `rce` when the exploit primitive is Spring EL expression parsing.
+- Do not emit `jndi_injection` for component demos unless the JNDI sink itself is the primary exploit path.
+- Do not emit broad tags (`trust_boundary`, `authentication`, `privilege_escalation`) when a narrower precise tag is supported (`xff_spoofing`, `session_fixation`, `verification_code`).
+- Do not emit `open_redirect` for infrastructure/parser misconfiguration unless attacker-controlled redirect response is the primary exploit.
+- Do not emit `denial_of_service` merely because a path lacks size/rate limits — require explicit evidence that resource exhaustion is the primary impact.
+- Do not emit `brute_force` merely because a login endpoint lacks visible rate limiting — rate limiting may exist at infrastructure level. Require explicit evidence of unlimited attempt processing.
+- Do not emit `csrf` for stateless APIs using Bearer-token-only authentication with `SessionCreationPolicy.STATELESS`.
+- Do not emit `insecure_deserialization` when the same sink is already covered by `component_vulnerability` (e.g., Fastjson autoType) unless a separate deserialization path exists.
+- Do not emit `arbitrary_file_upload` for profile/avatar image upload with type restrictions and non-webroot storage.
+- Do not emit `session_fixation` when Spring Security default session management is active (migrateSession is the default).
+- Do not emit `information_disclosure` for database credentials in application config files — these are deployment issues, not application-level disclosure.
 
 ---
 
